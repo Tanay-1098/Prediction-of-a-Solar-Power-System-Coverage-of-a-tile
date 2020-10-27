@@ -1,0 +1,232 @@
+---
+title: "SML project"
+author: "Tanay Sawant 19203264"
+date: "21/04/2020"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+data=read.csv("data_project_deepsolar.csv",header = T)
+str(data)   # to study how is our data
+Dim(data)
+```
+
+
+```{r}
+# reading more about our target variable:
+
+summary(data$solar_system_count)
+plot(data$solar_system_count,ylab="Solar system count votes",xlab="Distribution of votes",col=c(3:2))
+prop.table(table(data$solar_system_count))
+```
+
+```{r}
+#to check for missing data:
+
+sum(is.na(data))
+sum(complete.cases(data))
+```
+
+```{r}
+#removing the categorical variables:
+
+data1<-data[-c(1,2,76,79)]
+```
+
+
+```{r}
+#to check for multicolinearity:
+
+sum((cor(data1) > 0.5 | cor(data1) < -0.5) & cor(data1) < 1) / (77*77)
+sum((cor(data1) > 0.7 | cor(data1) < -0.7) & cor(data1) < 1) / (77*77)
+sum((cor(data1) > 0.9 | cor(data1) < -0.9) & cor(data1) < 1) / (77*77)
+
+#removing the highly correlated variables:
+
+tmp <- cor(data1)
+tmp[!lower.tri(tmp)] <- 0
+
+data.new <- data1[,!apply(tmp,2,function(x) any(abs(x) > 0.9))]
+data.new<-as.data.frame(scale(data.new))
+
+```
+
+```{r}
+# final data frame:
+
+mydata<-cbind(data$solar_system_count,data.new)
+colnames(mydata)[1]<-("solar_system_count")
+
+```
+
+```{r warning=FALSE, message=FALSE}
+library(doParallel)
+library(foreach)
+numCores <- detectCores()-1
+numCores
+registerDoParallel(numCores)
+
+
+```
+
+
+```{r}
+# model:
+
+set.seed(1234)
+
+keep=sample(1:nrow(mydata),size=0.75*nrow(mydata))  #dividing the data for training,validation, testing.
+test=setdiff(1:nrow(mydata),keep)
+dat=mydata[keep,]       #training and validation data set.
+dat_test=mydata[test,]  #testing data set.
+
+
+R=100 #No.of replicates.
+out <-matrix(NA, R, 6)
+colnames(out) <- c("val_log","val_rf","val_svm", "val_boost","best","test")
+out <- as.data.frame(out)
+
+N=nrow(dat)
+
+acc=matrix(NA,R,4)
+best=matrix(NA,R,2)
+
+res<-foreach(r=1:R,.packages = c("randomForest","adabag","kernlab","nnet")) %dopar%
+  { 
+
+  train=sample(1:N,size=0.75*N)
+  val=setdiff(1:N,train)
+  
+  #Multinomial Regression: (fitting, predicting and storing the accuracy.)
+  
+  fitmultinom=multinom(solar_system_count~.,data=dat,subset=train,trace=F)
+  predmultinom= predict(fitmultinom,newdata=dat[val,])
+  tab1=table(predmultinom,dat$solar_system_count[val])
+  acclog =sum(diag(tab1))/sum(tab1)
+  
+  #Random Forest Classification: (fitting, predicting and storing the accuracy.)
+  
+  fitrandom=randomForest(solar_system_count~.,data=dat,subset=train,importance=T)
+  predrandom=predict(fitrandom,newdata=dat[val,])
+  tab2=table(predrandom,dat$solar_system_count[val])
+  accrf=sum(diag(tab2))/sum(tab2)
+  
+  #Support vector machine: (fitting, predicting and storing the accuracy.)
+  
+  fitsvm=ksvm(solar_system_count~.,data=dat[train,])
+  predsvm=predict(fitsvm,newdata=dat[val,])
+  tab3=table(predsvm,dat$solar_system_count[val])
+  accsvm=sum(diag(tab3))/sum(tab3)
+  
+  #Boosting: (fitting, predicting and storing the accuracy.)
+  
+  fitboost<-boosting(solar_system_count~.,data =dat[train,],coeflearn ="Breiman",boos =FALSE)
+  predboost=predict(fitboost,newdata=dat[val,])
+  tab4=predboost$confusion
+  accboost=sum(diag(tab4))/sum(tab4)
+  
+  acc <-c(logistic = acclog, rf = accrf , svm =accsvm, boost = accboost)
+  out[r,1] <-acclog
+  out[r,2] <-accrf
+  out[r,3] <-accsvm
+  out[r,4] <-accboost
+  
+  #selecting the best model:
+  i = names(which.max(acc))
+  if(i=="logistic"){
+    predTestLog <-predict(fitmultinom,type ="class",newdata =dat_test)
+    tabTestLog <-table(predTestLog,dat_test$solar_system_count)
+    accbest <-sum(diag(tabTestLog))/sum(tabTestLog)
+    }
+    
+  if(i=="rf"){
+    predTestrf <-predict(fitrandom,type ="class",newdata =dat_test)
+    tabTestrf <-table(predTestrf,dat_test$solar_system_count)
+    accbest<-sum(diag(tabTestrf))/sum(tabTestrf)
+  }
+  if(i=="svm"){
+    predTestSvm <-predict(fitsvm,newdata =dat_test)
+    tabTestSvm <-table(predTestSvm,dat_test$solar_system_count)
+    accbest<-sum(diag(tabTestSvm))/sum(tabTestSvm)
+  }
+  if(i=="boost"){
+    predTestboost<-predict(fitboost,newdata =dat_test)
+    tabTestboost <-table(predTestboost,dat_test$solar_system_count)
+    accbest<-sum(diag(tabTestboost))/sum(tabTestboost)
+  }
+  
+  out[r,5] <-i
+  out[r,6] <-accbest
+  
+  return(out)
+  
+  }
+```
+
+```{r}
+# extract results
+for (i in 1:R) {
+  out[i, ] <- res[[i]][i, ]
+}
+
+head(out,3)
+
+```
+
+```{r}
+avg <- t(colMeans(as.matrix(out[,c(1,2,3,4)])))
+avg
+
+meanAcc<-colMeans(avg)
+meanAcc
+
+```
+
+```{r}
+sdAcc <- apply(out[,c(1,2,3,4)],2,sd)/sqrt(R)
+sdAcc
+
+```
+
+
+```{r fig.height=7}
+matplot(out[,c(1,2,3,4)], type = "l", lty = c(2,3,4), col = c("black", "red","blue","skyblue"), xlab = "Replications", ylab = "Accuracy")
+
+abline(h = meanAcc, col = c("black", "red","blue","skyblue"))
+legend("topleft", fill = c("black", "red","blue","skyblue"), legend = c("logistic", "random forest","svm","boosting"), bty = "n")
+
+
+```
+
+
+```{r}
+# how many times each classifier was selected
+table(out[,5])/R
+
+# summary test accuracy of the selected classifiers
+tapply(out[,6], out[,5], summary)
+
+```
+
+```{r}
+boxplot(out$test~out$best)
+stripchart(out$test~out$best,add =TRUE,vertical =TRUE,pch =19,col =adjustcolor("magenta3",0.2))
+
+```
+
+
+```{r}
+library(randomForest)
+fitrandom=randomForest(solar_system_count~.,data=dat,importance=T)
+predrandom=predict(fitrandom,newdata=dat_test)
+tabTestrf <-table(predrandom,dat_test$solar_system_count)
+tabTestrf
+   
+```
+
+
+
